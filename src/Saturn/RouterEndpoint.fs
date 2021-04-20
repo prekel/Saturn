@@ -23,6 +23,7 @@ module Router =
   type RouterState =
     { Routes: Dictionary<string * RouteType, HttpHandler list>
       RoutesF: Dictionary<string * RouteType, (obj -> HttpHandler) list>
+      RoutesFParameterTypes: Dictionary<string * RouteType, Type>
       Forawrds: Dictionary<string, Endpoint list>
 
       Pipelines: HttpHandler list
@@ -39,7 +40,12 @@ module Router =
           |> Seq.map(|KeyValue|)
           |> Seq.filter(fun ((_, t), _) -> t = typ )
           |> Seq.map (fun ((p, _), (acts)) -> (p, acts |> List.rev))
-        rts,rtsf
+        let rtsf1 =
+          state.RoutesFParameterTypes
+          |> Seq.map(|KeyValue|)
+          |> Seq.filter(fun ((_, t), _) -> t = typ )
+          |> Seq.map (fun ((p, _), (acts)) -> (p, acts))
+        rts,rtsf,rtsf1
 
   /// Computation expression used to create routing, combining `HttpHandlers`, `pipelines` and `controllers` together.
   ///
@@ -90,6 +96,7 @@ module Router =
         | false, _ -> []
         | true, lst -> lst
       state.RoutesF.[(path.Value, typ)] <- r::lst
+      state.RoutesFParameterTypes.[(path.Value, typ)] <- typeof<'f>
       state
 
     let addForward state path action : RouterState =
@@ -104,6 +111,7 @@ module Router =
       { Routes = Dictionary()
         RoutesF = Dictionary()
         Forawrds = Dictionary()
+        RoutesFParameterTypes = Dictionary()
         Pipelines = [] }
 
     member __.Run(state : RouterState) : Endpoint list =
@@ -115,23 +123,23 @@ module Router =
           else
            (Saturn.Common.succeed |> List.foldBack (fun e acc -> acc >=> e) state.Pipelines) >=> hndl
 
-        let routes, routesf = state.GetRoutes typ
+        let routes, routesf, r1 = state.GetRoutes typ
         let routes = routes |> Seq.map (fun (p, lst) ->
 
           if lst.Length = 1 then
             route p (addPipeline lst.Head)
           else
             route p (addPipeline (choose lst)))
-        let routesf = routesf |> Seq.map (fun (p, lst) ->
+        let routesf = (routesf, r1) ||> Seq.map2 (fun (p, lst) (_, t) ->
           let pf = PrintfFormat<_,_,_,_,_> p
           if lst.Length = 1 then
-            routef pf lst.Head
+            routef pf lst.Head |> addMetadata t
           else
             let chooseF = fun o ->
               lst
               |> List.map (fun f -> f o)
               |> choose
-            routef pf chooseF
+            routef pf chooseF |> addMetadata t
         )
         [ yield! routes; yield! routesf]
 
